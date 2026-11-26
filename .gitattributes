@@ -1,0 +1,9 @@
+# 统一换行符，避免 Windows 上 CRLF 导致每次提交都显示整个文件被修改
+* text=auto eol=lf
+
+# 这几类保持二进制语义
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.db binary

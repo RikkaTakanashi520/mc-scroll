@@ -1,0 +1,28 @@
+# ---- 数据库 ----
+# mc.db 有 653MB，远超 GitHub 单文件 100MB 上限。
+# 数据是抓取出来的，不是源码——用 scripts/ 里的流程在本机重建即可。
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# ---- 图片缓存 ----
+# 走一遍就自动重新生成，没必要进仓库
+data/imgcache/
+
+# ---- 测试截图 ----
+.shots/
+
+# ---- 依赖与系统 ----
+node_modules/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 编辑器 ----
+.vscode/
+.idea/
+*.swp
+
+# ---- 本地环境变量 ----
+.env
+.env.local

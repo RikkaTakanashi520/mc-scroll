@@ -1,0 +1,20 @@
+{
+  "name": "mc-scroll",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Scroll Minecraft mods, modpacks, datapacks, resource packs, shaders and plugins like a short-video feed",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node server/index.mjs",
+    "crawl": "node scripts/crawl.mjs --all --resume",
+    "crawl:taxonomy": "node scripts/crawl.mjs --taxonomy",
+    "enrich": "node scripts/enrich.mjs --min-downloads 500",
+    "warm": "node scripts/warm-images.mjs --limit 5000",
+    "test": "node scripts/test-v2.mjs",
+    "index": "node scripts/build-feed-index.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
