@@ -353,3 +353,67 @@ node scripts/test-v2.mjs   # 改完代码先跑回归，39 项全过再提 PR
 ## 许可
 
 代码以 MIT 许可发布（见 `LICENSE`）。抓取到的项目数据与截图版权归各自作者所有。
+
+## 部署到 GitHub Pages / Cloudflare Pages
+
+本地版需要 Node 服务（SQLite + 图片代理），但 Pages 只能托管静态文件，
+所以另有一条**纯静态**导出路径，同一份代码两种模式。
+
+### 为什么能零成本
+
+三个实测结论决定了这个方案：
+
+1. **图片可以热链**：带外部 Referer 请求 Modrinth CDN 返回 200、
+   `Cache-Control: public, max-age=2678400`（31 天）、`Access-Control-Allow-Origin: *`。
+   所以图片流量走 Modrinth 的 CDN，**不占自己的额度**。
+2. **brotli 比 gzip 省 34%**：主表 gzip 4.77MB → brotli 3.16MB。
+   Cloudflare 自动协商 .br，GitHub 不认但不报错。
+3. **分片懒加载**：首片 600 条（142KB），加 manifest + taxonomy 共约 **155KB**
+   就能开刷；剩余 18 片后台加载，加载完才开放完整筛选。
+
+| 平台 | 免费额度 | 本项目用量 |
+|---|---|---|
+| Cloudflare Pages | 20,000 文件 / 单文件 25MB / **无限带宽** | 175 文件 / 27MB |
+| GitHub Pages | 1GB 站点 / 100GB 月流量 | 同上 |
+
+Cloudflare 更宽松（无带宽限制），推荐它。
+
+### 构建
+
+```bash
+node scripts/build-static.mjs        # 导出到 dist/
+node scripts/serve-static.mjs        # 本地预览（模拟 Pages 行为）
+```
+
+导出内容：19 个主表分片 + 64 个正文分片 + 分类体系 + 前端，共 175 文件。
+
+### 两种模式的差别
+
+| | 本地（Node） | 静态（Pages） |
+|---|---|---|
+| 数据 | SQLite，实时 | JSON 分片，构建时快照 |
+| 搜索 | FTS5 全文索引 | 前端内存匹配（语料 7MB，30~60ms） |
+| 图片 | 代理缩放，最高 1280px | CDN 直连，350~1024px |
+| 收藏 | 本地 + 服务端同步 | 仅本地 localStorage |
+| 随机流 | feed_index 表等概率 | 内存加权采样 |
+
+### 部署到 Cloudflare Pages
+
+1. Fork 本仓库
+2. Cloudflare Dashboard → Pages → 连接 Git
+3. 构建命令填 `node scripts/build-static.mjs`，输出目录填 `dist`
+4. 完成，得到 `xxx.pages.dev` 域名
+
+### 部署到 GitHub Pages
+
+仓库已带 `.github/workflows/deploy.yml`，推送到 main 自动部署。
+
+**注意**：CI 里要现场抓数据（数据库 654MB 不进仓库），
+首次构建约 40 分钟，之后靠 Actions 缓存加速。
+也可以本地跑完 `build-static` 后把 `dist/` 推到 `gh-pages` 分支。
+
+### 静态版的已知限制
+
+- **没有高清图**：CDN 只给到 1024px，代理升级那条路在静态环境不存在
+- **数据是快照**：要更新得重跑构建
+- **搜索较慢**：全内存匹配，首次需要等分片加载完

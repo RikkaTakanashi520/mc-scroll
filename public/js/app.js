@@ -14,8 +14,20 @@
  */
 
 import * as i18n from './i18n.js';
+import * as ds from './datasource.js';
 
 const { t, fmtNum, setLang, getLang } = i18n;
+
+/**
+ * 运行模式。
+ *
+ *   false（默认）→ 连本地 Node 后端，全功能：实时数据、FTS5、高清图代理
+ *   true         → 读静态 JSON 分片，用在 GitHub/Cloudflare Pages 上
+ *
+ * 由 build-static.mjs 往 index.html 里注入 window.__MC_STATIC__ = true。
+ * 这样同一份代码既能本地开发，也能零成本托管，不用维护两个分支。
+ */
+const STATIC = typeof window !== 'undefined' && !!window.__MC_STATIC__;
 
 /**
  * API 基址。
@@ -200,6 +212,9 @@ function queryString(filters, extra = {}) {
 }
 
 async function fetchFeed(limit = 30, { timeoutMs = 0 } = {}) {
+  if (STATIC) await ensureStaticReady();
+  if (STATIC) return staticFeed(limit);
+
   const qs = queryString(state.filters, {
     limit,
     cursor: state.nextCursor || undefined,
@@ -216,6 +231,71 @@ async function fetchFeed(limit = 30, { timeoutMs = 0 } = {}) {
     if (!res.ok) throw new Error(`feed ${res.status}`);
     return res.json();
   }
+}
+
+/* ---------------- 静态模式的数据层 ---------------- */
+
+/** 静态模式下已加载的所有项目 */
+let staticPool = [];
+
+/**
+ * 静态模式切换频道时，等全部分片就绪再采样。
+ *
+ * 踩过的坑：首屏只加载 600 条（第一片），如果这时切到「光影」这种
+ * 小频道，600 条里可能一个光影都没有 → 抽出来的结果为空或只有 1 条，
+ * 表现为「切了频道但翻不了页」。
+ *
+ * 所以换筛选时要等全量就绪。首次加载期间给个提示，
+ * 已经加载完就直接返回（零成本）。
+ */
+let staticReady = null;
+function ensureStaticReady() {
+  if (!STATIC) return Promise.resolve();
+  if (ds.isFullyLoaded()) return Promise.resolve();
+  if (!staticReady) {
+    staticReady = ds.loadAll(() => {}).then(() => {
+      staticPool = ds.getAll();
+    });
+  }
+  return staticReady;
+}
+
+/** 静态模式的随机数状态：每次换筛选或刷新时重新播种 */
+let staticSeed = Date.now() >>> 0;
+
+function staticRng() {
+  staticSeed = (staticSeed * 1664525 + 1013904223) >>> 0;
+  return staticSeed / 4294967296;
+}
+
+/**
+ * 静态版的 feed。
+ *
+ * 和 backend 的区别：
+ *   后端靠 feed_index 表 + seed 游标做严格等概率分页；
+ *   静态版所有数据都在内存里，直接对筛选结果做加权采样即可。
+ *
+ * 「不重复」靠 state.queue 里的 slug 集合去重——
+ * 静态版没有游标概念（全部数据都在手上），
+ * 所以靠去重而不是游标来保证翻页不重样。
+ */
+function staticFeed(limit) {
+  const pool = ds.applyFilters(staticPool, state.filters);
+  if (!pool.length) return { items: [], nextCursor: null };
+
+  const existing = new Set(state.queue.map((c) => c.slug));
+  const picked = [];
+  let guard = 0;
+  while (picked.length < limit && guard++ < limit * 12) {
+    const batch = ds.sampleFeed(pool, Math.max(limit * 2, 20), staticRng);
+    for (const c of batch) {
+      if (picked.length >= limit) break;
+      if (existing.has(c.slug)) continue;
+      existing.add(c.slug);
+      picked.push(c);
+    }
+  }
+  return { items: picked, nextCursor: picked.length >= limit ? 'static' : null };
 }
 
 /**
@@ -279,6 +359,11 @@ async function refill() {
 
 async function loadTaxonomy() {
   try {
+    if (STATIC) {
+      // 静态版的 taxonomy 在 init() 时已经拿到，直接用
+      state.taxonomy = ds.getTaxonomy();
+      return;
+    }
     const res = await fetch(`${API}/api/taxonomy`);
     state.taxonomy = await res.json();
   } catch (e) {
@@ -633,6 +718,10 @@ const fillingImages = new Set();
 async function ensureAllImages(card) {
   if (!card || fillingImages.has(card.slug)) return;
   if ((card.images || []).length >= card.imageTotal) return;
+
+  // 静态版：全部图片在首次加载分片时就带过来了，不用补
+  if (STATIC) return;
+
   fillingImages.add(card.slug);
   try {
     const r = await fetch(`${API}/api/images/${encodeURIComponent(card.slug)}?from=0&limit=100`);
@@ -693,20 +782,45 @@ function bindGalleryScroll(mediaEl) {
 
 function setupScroll() {
   const track = $('feedTrack');
-  let raf = null;
-  track.addEventListener(
-    'scroll',
-    () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = null;
-        const idx = Math.round(track.scrollTop / (track.clientHeight || 1));
-        if (idx === state.cursor) return;
-        onCardChange(idx);
-      });
-    },
-    { passive: true },
-  );
+  let lastHandled = 0;
+  let busy = false;
+
+  /**
+   * 处理一次滚动落点：**同步执行**，不排队到 rAF 或定时器。
+   *
+   * 这是踩了两次坑之后的结论：
+   *
+   *   坑 1（原始写法）：
+   *     `if (raf) return; raf = requestAnimationFrame(...)`
+   *     rAF 不触发时 raf 永远非空，之后所有 scroll 全被挡掉。
+   *
+   *   坑 2（加了 setTimeout 兜底）：
+   *     页面不可见时（后台标签页、无头浏览器）浏览器会把
+   *     rAF **和** 定时器一起节流到每秒 1 次甚至完全不跑，
+   *     兜底同样不生效。
+   *
+   * 所以干脆不排队：scroll 事件本身已由浏览器节流（每帧最多一次），
+   * 再叠一个 20ms 时间戳去重即可。
+   *
+   * busy 防重入：onCardChange 里会改 DOM / 滚动位置，
+   * 极端情况下会同步再触发 scroll，用这个闸挡掉递归。
+   */
+  const process = () => {
+    if (busy) return;
+    const now = Date.now();
+    if (now - lastHandled < 20) return;
+    lastHandled = now;
+    const idx = Math.round(track.scrollTop / (track.clientHeight || 1));
+    if (idx === state.cursor) return;
+    busy = true;
+    try {
+      onCardChange(idx);
+    } finally {
+      busy = false;
+    }
+  };
+
+  track.addEventListener('scroll', process, { passive: true });
 }
 
 function onCardChange(idx) {
@@ -793,12 +907,15 @@ function toggleSave() {
     btn.classList.add('is-saved');
     haptic(18);
     toast(t('toastSaved'));
-    // 同步到服务端（为了将来跨设备；失败也不影响本地收藏）
-    fetch(`${API}/api/favorites?device=${deviceId()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId: card.id }),
-    }).catch(() => {});
+    // 同步到服务端（为了将来跨设备；失败也不影响本地收藏）。
+    // 静态版没有后端，跳过——收藏纯存 localStorage。
+    if (!STATIC) {
+      fetch(`${API}/api/favorites?device=${deviceId()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: card.id }),
+      }).catch(() => {});
+    }
   }
 
   saveJson(LS.saved, state.saved);
@@ -849,9 +966,22 @@ const detailCache = new Map();
 async function openDetailBySlug(slug) {
   try {
     if (!detailCache.has(slug)) {
-      const res = await fetch(`${API}/api/project/${encodeURIComponent(slug)}`);
-      if (!res.ok) throw new Error(res.status);
-      detailCache.set(slug, await res.json());
+      if (STATIC) {
+        // 静态版：数据已经在内存池里，正文按哈希分片取
+        const c = staticPool.find((x) => x.slug === slug);
+        if (!c) throw new Error('not_found');
+        const desc = await ds.getDescription(slug);
+        detailCache.set(slug, {
+          ...c,
+          description: desc,
+          descriptionZh: desc,
+          follows: 0,
+        });
+      } else {
+        const res = await fetch(`${API}/api/project/${encodeURIComponent(slug)}`);
+        if (!res.ok) throw new Error(res.status);
+        detailCache.set(slug, await res.json());
+      }
     }
     openDetail(detailCache.get(slug));
   } catch (e) {
@@ -1233,13 +1363,27 @@ async function resetFeed() {
       // 等两帧再恢复 snap 并解除标志：
       // 第一帧让 scrollTo(0) 触发的 scroll 事件在 rebuilding=true 时被丢弃，
       // 第二帧确保 snap 恢复后不会再被旧位置吸附。
+      //
+      // 但必须保证 rebuilding **一定会被复位**。
+      // 踩过的坑：requestAnimationFrame 在页面不可见（后台标签页、无头浏览器
+      // 某些时机）时会被节流甚至完全不触发，rebuilding 就永远卡在 true，
+      // 而 onCardChange 开头有 `if (state.rebuilding) return`，
+      // 表现就是「切完频道后所有翻页全部失灵」。
+      // 所以额外加一个定时兜底，不依赖 rAF 是否执行。
       requestAnimationFrame(() => {
         track.style.scrollSnapType = '';
         track.style.scrollBehavior = '';
         requestAnimationFrame(() => {
-          state.rebuilding = false;
+          if (myEpoch === state.epoch) state.rebuilding = false;
         });
       });
+      setTimeout(() => {
+        if (myEpoch === state.epoch) {
+          track.style.scrollSnapType = '';
+          track.style.scrollBehavior = '';
+          state.rebuilding = false;
+        }
+      }, 250);
     } else {
       state.rebuilding = false;
     }
@@ -1258,14 +1402,22 @@ async function doSearch(q) {
   }
   list.innerHTML = `<div class="empty">${escapeHtml(t('toastSearching'))}</div>`;
   try {
-    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(query)}&limit=40`);
-    const data = await res.json();
-    if (!data.items?.length) {
+    let items;
+    if (STATIC) {
+      // 静态版没有 FTS5，直接在内存池里做包含匹配。
+      // 72,199 条、语料 7MB，实测一次搜索 30~60ms，可以接受。
+      items = ds.search(staticPool, query, 40);
+    } else {
+      const res = await fetch(`${API}/api/search?q=${encodeURIComponent(query)}&limit=40`);
+      const data = await res.json();
+      items = data.items || [];
+    }
+    if (!items.length) {
       list.innerHTML = `<div class="empty">${escapeHtml(t('toastNoResultsFor', query))}</div>`;
       return;
     }
     list.innerHTML = '';
-    for (const card of data.items) {
+    for (const card of items) {
       const tile = document.createElement('div');
       tile.className = 'tile';
       const img = card.images?.[0]?.thumb || card.icon || '';
@@ -1506,6 +1658,13 @@ async function renderDetailbar(card) {
     const cached = detailCache.get(card.slug);
     if (cached) {
       full = cached;
+    } else if (STATIC) {
+      // 静态版：正文按 slug 哈希分片取（64 片之一），不拉整个项目
+      try {
+        const desc = await ds.getDescription(card.slug);
+        full = { ...card, description: desc, descriptionZh: desc };
+        detailCache.set(card.slug, full);
+      } catch {}
     } else {
       try {
         const res = await fetch(`${API}/api/project/${encodeURIComponent(card.slug)}`);
@@ -2253,20 +2412,44 @@ function onKeyDown(e) {
 /* ---------------- 启动 ---------------- */
 
 async function boot() {
-  try {
-    const health = await fetch(`${API}/api/health`).then((r) => r.json());
-    if (!health.projects) {
+  if (STATIC) {
+    // 静态模式：manifest + taxonomy + 第一片，约 700KB（brotli）
+    // 首屏只等这一个往返就能开刷，剩下的分片后台补
+    try {
+      const { manifest, taxonomy } = await ds.init();
+      state.taxonomy = taxonomy;
+      staticPool = await ds.loadFirstShard();
+      console.log(`[MC Scroll] static: ${manifest.total} projects, first shard ${staticPool.length}`);
+      // 后台补齐剩余分片，加载完才能用完整筛选和搜索
+      ds.loadAll((pct, n) => {
+        if (pct >= 100) staticPool = ds.getAll();
+        else if (pct % 20 === 0) console.log(`[MC Scroll] 加载分片 ${pct}% (${n})`);
+      }).then(() => {
+        staticPool = ds.getAll();
+        console.log(`[MC Scroll] 全部分片就绪：${staticPool.length} 项目`);
+      });
+    } catch (e) {
+      console.error('static init failed', e);
       $('fatal').hidden = false;
       $('fatalMsg').textContent = t('fatalEmpty');
       return;
     }
-    console.log(
-      `[MC Scroll] DB: ${health.projects} projects, ${health.images} images, ${health.categories} categories`,
-    );
-  } catch {
-    $('fatal').hidden = false;
-    $('fatalMsg').textContent = t('fatalNoApi');
-    return;
+  } else {
+    try {
+      const health = await fetch(`${API}/api/health`).then((r) => r.json());
+      if (!health.projects) {
+        $('fatal').hidden = false;
+        $('fatalMsg').textContent = t('fatalEmpty');
+        return;
+      }
+      console.log(
+        `[MC Scroll] DB: ${health.projects} projects, ${health.images} images, ${health.categories} categories`,
+      );
+    } catch {
+      $('fatal').hidden = false;
+      $('fatalMsg').textContent = t('fatalNoApi');
+      return;
+    }
   }
 
   // 先定语言，后面的渲染才知道该用哪套文案

@@ -26,3 +26,7 @@ desktop.ini
 # ---- 本地环境变量 ----
 .env
 .env.local
+
+# ---- 静态导出产物 ----
+# 由 scripts/build-static.mjs 生成，CI 里会重新构建，不进仓库
+dist/

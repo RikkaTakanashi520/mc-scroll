@@ -12,7 +12,9 @@
     "enrich": "node scripts/enrich.mjs --min-downloads 500",
     "warm": "node scripts/warm-images.mjs --limit 5000",
     "test": "node scripts/test-v2.mjs",
-    "index": "node scripts/build-feed-index.mjs"
+    "index": "node scripts/build-feed-index.mjs",
+    "build:static": "node scripts/build-static.mjs",
+    "serve:static": "node scripts/serve-static.mjs"
   },
   "engines": {
     "node": ">=22"

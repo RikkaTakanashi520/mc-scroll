@@ -1,0 +1,72 @@
+name: Deploy to GitHub Pages
+
+# 什么时候跑：
+#   1. 推送到 main 分支
+#   2. 手动触发（改完数据想重新导出）
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GitHub Pages 需要这两个权限
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个部署，新的排队而不取消正在跑的
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 关键：数据库不在仓库里（654MB 超 GitHub 限制），
+      # 所以 CI 里要现场抓一遍数据。缓存起来避免每次全量重抓。
+      - name: Cache database
+        uses: actions/cache@v4
+        with:
+          path: data/mc.db
+          key: mc-db-${{ github.run_number }}
+          restore-keys: |
+            mc-db-
+
+      - name: Crawl data (if missing)
+        run: |
+          mkdir -p data
+          npm run crawl:taxonomy
+          # --resume 支持断点续传，缓存命中时几乎瞬间完成
+          npm run crawl
+
+      - name: Enrich screenshots
+        run: npm run enrich
+
+      - name: Build feed index
+        run: npm run index
+
+      - name: Export static site
+        run: node scripts/build-static.mjs
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
