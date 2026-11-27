@@ -143,32 +143,48 @@ async function main() {
   // ============ 3. 主表分片 ============
   //
   // 字段用数组而不是对象：键名完全省掉，实测省 25% 体积。
-  // 顺序：slug, title, summary, type, channels, color, downloads,
+  // 顺序：slug, title, summary, summaryZh, type, channels, color, downloads,
   //       license, galleryCount, categories, loaders, versions, images
+  //
+  // ⚠️ summary 和 summaryZh 必须分开存！
+  // 踩过的坑：早前用 `summary_zh || summary` 合并成一个字段，
+  // 结果静态版在英文模式下也显示中文简介 —— 英文原文根本没被导出，
+  // 前端拿不到就没法切回去。
+  //
+  // 为了省体积：两者相同时（原文就是中文、或翻译失败回退英文）只存一份，
+  // summaryZh 记为空字符串，前端按「有值用值，无值回退 summary」处理。
   const shards = [];
   let shardBytes = 0;
   let shardBrBytes = 0;
+  let dupSaved = 0;
 
   // 首片小、后续片大：首屏只需要 p00 就能开刷
   let cursor2 = 0;
   let firstShard = true;
   while (cursor2 < rows.length) {
     const size = firstShard ? HOT_SHARD : SHARD;
-    const slice = rows.slice(cursor2, cursor2 + size).map((r) => [
-      r.slug,
-      r.title,
-      r.summary_zh || r.summary || '',
-      r.project_type,
-      r.channels || '',
-      r.color,
-      r.downloads,
-      r.license_id || '',
-      r.gallery_count,
-      catOf.get(r.id) || [],
-      loadOf.get(r.id) || [],
-      verOf.get(r.id) || [],
-      imgOf.get(r.id) || [],
-    ]);
+    const slice = rows.slice(cursor2, cursor2 + size).map((r) => {
+      const en = r.summary || '';
+      const zh = r.summary_zh || '';
+      const same = !zh || zh === en;
+      if (same) dupSaved++;
+      return [
+        r.slug,
+        r.title,
+        en,
+        same ? '' : zh,
+        r.project_type,
+        r.channels || '',
+        r.color,
+        r.downloads,
+        r.license_id || '',
+        r.gallery_count,
+        catOf.get(r.id) || [],
+        loadOf.get(r.id) || [],
+        verOf.get(r.id) || [],
+        imgOf.get(r.id) || [],
+      ];
+    });
     cursor2 += size;
     const n = shards.length;
     const name = `p${String(n).padStart(2, '0')}.json`;
@@ -181,11 +197,15 @@ async function main() {
     if (n % 5 === 0) process.stdout.write(`\r  主表分片 ${n + 1} ...`);
   }
   console.log(`\r  主表 ${shards.length} 片，原始 ${kb(shardBytes)} → brotli ${(shardBrBytes / 1024 / 1024).toFixed(2)} MB`);
+  console.log(`  （其中 ${dupSaved} 条中英相同，只存一份）`);
 
   // ============ 4. 正文分片 ============
   //
   // 正文 14.9MB 是最大头，但只有用户点「关于」时才需要。
   // 按 slug 哈希取模分成 64 份，前端按 slug 算出该拉哪一份。
+  //
+  // 同样要保留中英两份：`[en, zh]` 两个元素的数组。
+  // 只有一个版本时第二项留空，前端自动回退。
   const descRows = db
     .prepare(
       `SELECT slug, description_zh, description FROM projects WHERE gallery_count > 0`,
@@ -202,9 +222,12 @@ async function main() {
     return (h >>> 0) % DESC_PARTS;
   };
   for (const r of descRows) {
-    const text = (r.description_zh || r.description || '').slice(0, 1200);
-    if (!text) continue;
-    descBuckets[hashSlug(r.slug)][r.slug] = text;
+    const en = (r.description || '').slice(0, 1200);
+    const zh = (r.description_zh || '').slice(0, 1200);
+    if (!en && !zh) continue;
+    // 相同就只存一份，省一半体积
+    const same = !zh || zh === en;
+    descBuckets[hashSlug(r.slug)][r.slug] = same ? [en || zh] : [en, zh];
   }
   let descBytes = 0;
   for (let i = 0; i < DESC_PARTS; i++) {

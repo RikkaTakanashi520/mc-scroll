@@ -83,17 +83,27 @@ async function fetchJson(rel) {
   return res.json();
 }
 
-/** 把数组格式的项目还原成对象 */
+/**
+ * 把数组格式的项目还原成对象。
+ *
+ * 数组字段顺序必须和 build-static.mjs 里完全一致：
+ *   slug, title, summary, summaryZh, type, channels, color, downloads,
+ *   license, galleryCount, categories, loaders, versions, images
+ *
+ * summaryZh 为空字符串表示「和英文相同，没单独存」，
+ * 前端按「有值用值，无值回退 summary」处理。
+ */
 function unpack(a) {
   const [
-    slug, title, summary, type, channels, color, downloads, license,
+    slug, title, summary, summaryZh, type, channels, color, downloads, license,
     galleryCount, categories, loaders, versions, images,
   ] = a;
   return {
     slug,
     title,
     summary,
-    summaryZh: null, // 简介已经是中文优先，不需要再区分
+    // 空字符串 → null，让 descOf() 明确走回退逻辑
+    summaryZh: summaryZh || null,
     type,
     channels: channels ? channels.split(',') : [type],
     color,
@@ -272,9 +282,11 @@ export function search(pool, q, limit = 40) {
 /**
  * 取某个项目的正文。
  * 正文分 64 片，按 slug 哈希定位——和后端 build 时用的是同一个哈希。
+ *
+ * 返回 { en, zh } 两份，由调用方按语言选。
  */
 const descCache = new Map();
-export async function getDescription(slug) {
+export async function getDescriptions(slug) {
   const PARTS = manifest.descParts;
   let h = 2166136261;
   for (let i = 0; i < slug.length; i++) {
@@ -287,7 +299,20 @@ export async function getDescription(slug) {
   if (!descCache.has(name)) {
     descCache.set(name, await fetchJson(name).catch(() => ({})));
   }
-  return descCache.get(name)[slug] || '';
+  const hit = descCache.get(name)[slug];
+  if (!hit) return { en: '', zh: '' };
+  // build 时：两个版本 → [en, zh]；只有一个版本 → [text]
+  if (Array.isArray(hit)) {
+    return { en: hit[0] || '', zh: hit[1] || '' };
+  }
+  // 兼容旧数据（纯字符串）
+  return { en: String(hit), zh: '' };
+}
+
+/** 兼容旧调用：只取中文（没有就用英文） */
+export async function getDescription(slug) {
+  const { en, zh } = await getDescriptions(slug);
+  return zh || en;
 }
 
 /** 静态模式没有后端收藏，纯本地 */

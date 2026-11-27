@@ -967,14 +967,14 @@ async function openDetailBySlug(slug) {
   try {
     if (!detailCache.has(slug)) {
       if (STATIC) {
-        // 静态版：数据已经在内存池里，正文按哈希分片取
+        // 静态版：数据已经在内存池里，正文按哈希分片取（同时拿中英两份）
         const c = staticPool.find((x) => x.slug === slug);
         if (!c) throw new Error('not_found');
-        const desc = await ds.getDescription(slug);
+        const { en, zh } = await ds.getDescriptions(slug);
         detailCache.set(slug, {
           ...c,
-          description: desc,
-          descriptionZh: desc,
+          description: en,
+          descriptionZh: zh || null,
           follows: 0,
         });
       } else {
@@ -1661,8 +1661,8 @@ async function renderDetailbar(card) {
     } else if (STATIC) {
       // 静态版：正文按 slug 哈希分片取（64 片之一），不拉整个项目
       try {
-        const desc = await ds.getDescription(card.slug);
-        full = { ...card, description: desc, descriptionZh: desc };
+        const { en, zh } = await ds.getDescriptions(card.slug);
+        full = { ...card, description: en, descriptionZh: zh || null };
         detailCache.set(card.slug, full);
       } catch {}
     } else {
