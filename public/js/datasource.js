@@ -34,30 +34,47 @@ const progressCbs = [];
 let manifest = null;
 let taxonomy = null;
 
-const brSupport = typeof DecompressionStream !== 'undefined';
+/**
+ * 服务器是否会为 .br 文件设置 Content-Encoding。
+ *
+ * 这决定了能不能用预压缩版本：
+ *   Cloudflare Pages → 自动识别，返回 Content-Encoding: br，省 34% 流量
+ *   GitHub Pages     → 只会把 .br 当普通二进制文件返回，解压必然失败
+ *
+ * 踩过的坑：一开始无条件先请求 .br，GitHub Pages 上 19 个分片
+ * 每个都要经历「请求 .br → 解压失败 → 回退 .json」两次往返，
+ * 首屏从 0.5 秒变成 18 秒。
+ *
+ * 现在先探测一次，结果缓存起来，之后直接走对路径。
+ */
+let brSupported = null;
+
+async function detectBr() {
+  if (brSupported !== null) return brSupported;
+  try {
+    const res = await fetch(`${DATA}/manifest.json.br`, { method: 'GET' });
+    brSupported = res.ok && res.headers.get('content-encoding') === 'br';
+  } catch {
+    brSupported = false;
+  }
+  return brSupported;
+}
 
 /**
  * 拉一个 JSON 文件。
  *
- * 优先用浏览器原生 brotli 解压（DecompressionStream），
- * 因为 GitHub Pages 不会自动解 .br 文件，
- * Cloudflare Pages 会自动解但走原生也没坏处。
- * 没有原生支持就退回普通 .json。
+ * 只有服务器确实做了 br 编码才用 .br，否则直接取 .json。
  */
 async function fetchJson(rel) {
   const url = `${DATA}/${rel}`;
+  const useBr = await detectBr();
 
-  // 先试 .br（体积小 34%）
-  if (brSupport) {
+  if (useBr) {
     try {
       const res = await fetch(url + '.br');
-      if (res.ok) {
-        const ds = new DecompressionStream('brotli');
-        const stream = res.body.pipeThrough(ds);
-        return await new Response(stream).json();
-      }
+      if (res.ok) return await res.json();
     } catch {
-      // brotli 解码失败就退回普通文件
+      /* 解压失败就退回普通文件 */
     }
   }
 
