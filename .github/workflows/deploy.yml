@@ -1,20 +1,29 @@
 name: Deploy to GitHub Pages
 
 # 什么时候跑：
-#   1. 推送到 main 分支
-#   2. 手动触发（改完数据想重新导出）
+#   1. 推送到 main
+#   2. 手动触发
+#
+# 重要设计：**不在 CI 里抓数据**。
+#
+# 最初的版本让 CI 跑 crawl.mjs 全量抓取（40 分钟）+ enrich + 翻译，
+# 结果实测跑 14 分钟还没进到构建阶段，GitHub Actions 免费额度会被吃光，
+# 而且很容易撞默认 6 小时超时。
+#
+# 数据是「构建产物」而不是「源码」——正确的做法是本地导出 dist/ 后
+# 推到一个专门的分支（gh-pages），这个 workflow 只负责发布。
+#
+# 想自动化更新数据，用 scripts/publish-pages.mjs（本地跑，会推送 gh-pages 分支）。
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# GitHub Pages 需要这两个权限
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# 同一时间只跑一个部署，新的排队而不取消正在跑的
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -29,37 +38,24 @@ jobs:
         with:
           node-version: '22'
 
-      # 关键：数据库不在仓库里（654MB 超 GitHub 限制），
-      # 所以 CI 里要现场抓一遍数据。缓存起来避免每次全量重抓。
-      - name: Cache database
-        uses: actions/cache@v4
-        with:
-          path: data/mc.db
-          key: mc-db-${{ github.run_number }}
-          restore-keys: |
-            mc-db-
-
-      - name: Crawl data (if missing)
+      # dist/ 由本地 scripts/build-static.mjs 生成后推送到 gh-pages 分支。
+      # 这里直接切到那个分支取现成产物，不重新抓数据。
+      - name: Fetch prebuilt site from gh-pages branch
         run: |
-          mkdir -p data
-          npm run crawl:taxonomy
-          # --resume 支持断点续传，缓存命中时几乎瞬间完成
-          npm run crawl
-
-      - name: Enrich screenshots
-        run: npm run enrich
-
-      - name: Build feed index
-        run: npm run index
-
-      - name: Export static site
-        run: node scripts/build-static.mjs
+          if git ls-remote --exit-code --heads origin gh-pages; then
+            git fetch origin gh-pages --depth=1
+            git worktree add ./_site origin/gh-pages
+            echo "::notice::使用 gh-pages 分支的预构建产物"
+          else
+            echo "::error::gh-pages 分支不存在。请先在本地运行 node scripts/publish-pages.mjs"
+            exit 1
+          fi
 
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: ./_site
 
   deploy:
     needs: build
