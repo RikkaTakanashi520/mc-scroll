@@ -46,6 +46,22 @@ function capture(cmd) {
   }
 }
 
+/**
+ * 把主仓库的 git 代理配置带进临时目录。
+ *
+ * 踩过的坑：gh-pages 是在临时目录里 git init 的，
+ * 不会继承主仓库的 local 配置，国内网络下 push 直接连不上。
+ * 这里显式读出来，用 -c 参数传给临时仓库的 git 命令。
+ */
+function proxyArgs() {
+  const http = capture('git config --local --get http.proxy') || capture('git config --global --get http.proxy');
+  const https = capture('git config --local --get https.proxy') || capture('git config --global --get https.proxy');
+  const args = [];
+  if (http) args.push(`-c http.proxy=${http}`);
+  if (https) args.push(`-c https.proxy=${https}`);
+  return args;
+}
+
 async function main() {
   const remote = capture('git remote get-url origin');
   if (!remote) {
@@ -89,7 +105,9 @@ async function main() {
   g(`git -c user.name="mc-scroll-bot" -c user.email="bot@local" commit -q -m ${JSON.stringify(MSG)}`);
 
   console.log('\n[4/4] 推送...');
-  g(`git push -f ${remote} gh-pages`);
+  const px = proxyArgs().join(' ');
+  if (px) console.log(`  使用代理: ${px}`);
+  g(`git ${px} push -f ${remote} gh-pages`);
 
   await rm(tmp, { recursive: true, force: true });
 
