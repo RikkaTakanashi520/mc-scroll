@@ -608,6 +608,54 @@ async function main() {
   await shot('08-keys-rebind.png');
   await cdp.eval(`document.getElementById('keysClose').click(); 1`);
 
+  // ---- 10. 无截图项目 ----
+  // 「只看有截图」默认开，关掉后应该能刷到无图项目（含 Fabric API 这类基础库）。
+  // 无图卡片必须显示 图标 + 标题 + 简介，不能只有一行字。
+  await cdp.eval(`localStorage.setItem('mcscroll.filters.v2', JSON.stringify({types:[],categories:[],loaders:[],versions:[],requireImages:false})); 1`);
+  await cdp.send('Page.navigate', { url: BASE });
+  await sleep(6000);
+  await waitImgs();
+  await sleep(2000);
+
+  let phInfo = null;
+  for (let i = 0; i < 20; i++) {
+    const s = await cdp.eval(`(() => {
+      const c = [...document.querySelectorAll('.card')]
+        .find(x => Math.abs(x.getBoundingClientRect().top) < 5);
+      const ph = c?.querySelector('.card-placeholder');
+      if (!ph) return null;
+      const icon = ph.querySelector('.ph-icon');
+      return {
+        title: ph.querySelector('.ph-text')?.textContent || '',
+        desc: ph.querySelector('.ph-desc')?.textContent || '',
+        hasIcon: !!icon,
+        iconLoaded: (icon?.naturalWidth || 0) > 0,
+        iconW: icon ? Math.round(icon.getBoundingClientRect().width) : 0,
+        sub: ph.querySelector('.ph-sub')?.textContent || '',
+      };
+    })()`);
+    if (s) { phInfo = s; break; }
+    await pressKey('ArrowDown', 'ArrowDown', 40);
+    await sleep(1400);
+  }
+
+  if (phInfo) {
+    check('可刷到无截图项目', true, phInfo.title.slice(0, 22));
+    check('无图卡片有标题+简介', !!phInfo.title && !!phInfo.desc, `${phInfo.title.slice(0, 14)} / ${phInfo.desc.slice(0, 18)}`);
+    check(
+      '无图卡片图标尺寸正确',
+      !phInfo.hasIcon || (phInfo.iconLoaded && phInfo.iconW > 40 && phInfo.iconW < 200),
+      `${phInfo.iconW}px`,
+    );
+  } else {
+    check('可刷到无截图项目', false, '20 次内没翻到');
+    check('无图卡片有标题+简介', false, '同上');
+    check('无图卡片图标尺寸正确', false, '同上');
+  }
+
+  // 恢复默认
+  await cdp.eval(`localStorage.setItem('mcscroll.filters.v2', JSON.stringify({types:[],categories:[],loaders:[],versions:[],requireImages:true})); 1`);
+
   check('无 JS 异常', cdp.errors.length === 0, cdp.errors.slice(0, 2).join(' | '));
 
   const passed = results.filter((r) => r.pass).length;

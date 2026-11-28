@@ -88,7 +88,7 @@ async function fetchJson(rel) {
  *
  * 数组字段顺序必须和 build-static.mjs 里完全一致：
  *   slug, title, summary, summaryZh, type, channels, color, downloads,
- *   license, galleryCount, categories, loaders, versions, images
+ *   license, galleryCount, icon, categories, loaders, versions, images
  *
  * summaryZh 为空字符串表示「和英文相同，没单独存」，
  * 前端按「有值用值，无值回退 summary」处理。
@@ -96,7 +96,7 @@ async function fetchJson(rel) {
 function unpack(a) {
   const [
     slug, title, summary, summaryZh, type, channels, color, downloads, license,
-    galleryCount, categories, loaders, versions, images,
+    galleryCount, icon, categories, loaders, versions, images,
   ] = a;
   return {
     slug,
@@ -110,6 +110,7 @@ function unpack(a) {
     downloads,
     license,
     galleryCount,
+    icon: icon || null,
     categories: categories || [],
     loaders: loaders || [],
     versions: versions || [],

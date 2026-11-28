@@ -481,12 +481,21 @@ function feed(params) {
   //         → 分布正确了，但 OFFSET 要顺序跳过 n 行，
   //           实测 offset=50000 单次 74ms，一页 25 条要 1800ms。
   //
-  //   现在的做法：预建 feed_index 表，把可刷项目连续编号成 0..N-1，
+  //   现在的做法：预建 feed_index 表，把所有项目连续编号成 0..N-1，
   //   随机取一行 = seq 主键等值查找 = 0.002ms（快 3.7 万倍），
   //   且因为编号连续，每个项目被抽中的概率严格相等。
-  const idxTotal = cachedCount('feed_index_total', () => {
+  //
+  //   两张索引表：
+  //     feed_index      全量 169,451 行（含无截图项目）
+  //     feed_index_img  只含有截图的 72,199 行
+  //   按 requireImages 选对应那张，而不是「取全量再拒绝采样」——
+  //   后者在只刷有图时会有一半以上的尝试被丢弃，白白浪费。
+  const useImgIndex = params.requireImages;
+  const idxTotal = cachedCount(useImgIndex ? 'feed_index_img_total' : 'feed_index_total', () => {
     try {
-      return db.prepare('SELECT COUNT(*) n FROM feed_index').get().n;
+      return db
+        .prepare(`SELECT COUNT(*) n FROM ${useImgIndex ? 'feed_index_img' : 'feed_index'}`)
+        .get().n;
     } catch {
       return 0;
     }
@@ -497,7 +506,9 @@ function feed(params) {
     throw new Error('feed_index 未构建，请运行 node scripts/build-feed-index.mjs');
   }
 
-  const seqStmt = db.prepare('SELECT project_id FROM feed_index WHERE seq = ?');
+  const seqStmt = db.prepare(
+    `SELECT project_id FROM ${useImgIndex ? 'feed_index_img' : 'feed_index'} WHERE seq = ?`,
+  );
   const fullById = db.prepare(`SELECT ${SELECT_CARD} FROM projects p WHERE p.id = ?`);
 
   function grabWild(n) {

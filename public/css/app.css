@@ -959,13 +959,22 @@ body {
   padding: 24px;
   text-align: center;
 }
-.ph-icon {
+/* 图标是占位卡的一部分，必须压过 .card-media img 的通配规则。
+ *
+ * 踩过的坑：`.card-media img { width:100%; height:100%; min-height:100% }`
+ * 是「类 + 元素」(0,1,1)，而 `.ph-icon` 只有「类」(0,1,0)，
+ * 所以图标被撑成整屏大小（实测 772×775，本应 96×96），
+ * 标题和简介全被挤出可视区。
+ * 这里用 `.card-media .ph-icon` 提到 (0,2,1) 才能覆盖。 */
+.card-media .ph-icon {
   width: 96px;
   height: 96px;
+  min-height: 0;
   border-radius: 20px;
   object-fit: contain;
   background: rgba(255, 255, 255, 0.06);
   padding: 10px;
+  flex: none;
 }
 .ph-text {
   font-size: 19px;
@@ -974,9 +983,22 @@ body {
   max-width: 80%;
   line-height: 1.3;
 }
+.ph-desc {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg-dim);
+  max-width: 78%;
+  /* 最多 3 行，避免长简介把卡片撑爆 */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .ph-sub {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--fg-faint);
+  /* 和简介拉开一点距离，表明它是元信息 */
+  margin-top: 2px;
 }
 
   .panel-scroll {

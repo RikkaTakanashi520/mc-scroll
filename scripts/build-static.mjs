@@ -74,17 +74,21 @@ async function main() {
   //
   // 排序用 weight（= log10(downloads+10)）降序，让第一片就是热门内容。
   // 这样首屏只需要加载片 0 就能刷，不用等全量。
+  //
+  // 收录**全部项目**，包括没有截图的。
+  //   97,252 个项目没有截图（57%），但里面有 Fabric API、Lithium 这类
+  //   基础库——作者本来就不传截图，不该在刷流里消失。
+  //   是否过滤交给前端的 requireImages 开关。
   const rows = db
     .prepare(
       `SELECT id, slug, title, summary_zh, summary, project_type, channels,
-              color, downloads, license_id, gallery_count, weight, updated_at
+              color, downloads, license_id, gallery_count, weight, updated_at, icon_url
        FROM projects
-       WHERE gallery_count > 0
        ORDER BY weight DESC, id ASC`,
     )
     .all();
 
-  console.log(`\n可刷项目 ${rows.length} 条`);
+  console.log(`\n全部项目 ${rows.length} 条`);
 
   // ============ 2. 关联数据 ============
   const idSet = new Set(rows.map((r) => r.id));
@@ -144,15 +148,15 @@ async function main() {
   //
   // 字段用数组而不是对象：键名完全省掉，实测省 25% 体积。
   // 顺序：slug, title, summary, summaryZh, type, channels, color, downloads,
-  //       license, galleryCount, categories, loaders, versions, images
+  //       license, galleryCount, icon, categories, loaders, versions, images
   //
   // ⚠️ summary 和 summaryZh 必须分开存！
   // 踩过的坑：早前用 `summary_zh || summary` 合并成一个字段，
   // 结果静态版在英文模式下也显示中文简介 —— 英文原文根本没被导出，
   // 前端拿不到就没法切回去。
   //
-  // 为了省体积：两者相同时（原文就是中文、或翻译失败回退英文）只存一份，
-  // summaryZh 记为空字符串，前端按「有值用值，无值回退 summary」处理。
+  // icon 也要带上：没有截图的项目（57%）全靠图标撑起占位卡片，
+  // 不带的话刷到就是一块纯色，很难看。
   const shards = [];
   let shardBytes = 0;
   let shardBrBytes = 0;
@@ -179,6 +183,7 @@ async function main() {
         r.downloads,
         r.license_id || '',
         r.gallery_count,
+        r.icon_url || '',
         catOf.get(r.id) || [],
         loadOf.get(r.id) || [],
         verOf.get(r.id) || [],
@@ -207,9 +212,7 @@ async function main() {
   // 同样要保留中英两份：`[en, zh]` 两个元素的数组。
   // 只有一个版本时第二项留空，前端自动回退。
   const descRows = db
-    .prepare(
-      `SELECT slug, description_zh, description FROM projects WHERE gallery_count > 0`,
-    )
+    .prepare(`SELECT slug, description_zh, description FROM projects`)
     .all();
   const DESC_PARTS = 64;
   const descBuckets = Array.from({ length: DESC_PARTS }, () => ({}));

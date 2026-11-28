@@ -401,13 +401,23 @@ function buildCard(card) {
   // 现在由 appendImagesToMedia 全量渲染，补图也走同一个函数。
   const images = card.images || [];
   if (!images.length) {
-    // 没截图的卡片：显示图标 + 名称，避免整屏空白
+    // 没截图的卡片：图标 + 标题 + 简介。
+    //
+    // 这类项目占 57%（97,252 个），其中 94.5% 有图标。
+    // 卡片不能只有标题一行字——那样整屏空荡荡，很难看。
+    // 同时显示简介，让用户能判断这是什么项目。
+    //
+    // 注意图标上**不能**加 loading="lazy"：
+    // 它和截图那个坑一样——图标在 .card-media（overflow-x 容器）里，
+    // 原生 lazy 会判定「不可见」而一直不发请求，实测 naturalWidth 恒为 0，
+    // 占位卡就只剩纯色背景。
     const ph = document.createElement('div');
     ph.className = 'card-placeholder';
     ph.innerHTML = `
-      ${card.icon ? `<img src="${card.icon}" alt="" class="ph-icon" />` : ''}
+      ${card.icon ? `<img src="${card.icon}" alt="" class="ph-icon" decoding="async" />` : ''}
       <span class="ph-text">${escapeHtml(card.title)}</span>
-      <span class="ph-sub">No screenshots uploaded</span>`;
+      <span class="ph-desc">${escapeHtml(descOf(card))}</span>
+      <span class="ph-sub">${escapeHtml(t('noScreenshots'))}</span>`;
     media.appendChild(ph);
   } else {
     appendImagesToMedia(media, card, 0);
